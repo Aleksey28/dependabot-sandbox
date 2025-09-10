@@ -21,3 +21,4 @@ jobs:
         with:
           warn-only: true
           head-ref: ${{ github.event.inputs.sha }}
+          base-ref: ${{ github.event.inputs.sha }}

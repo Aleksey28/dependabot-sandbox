@@ -1,27 +1,98 @@
-name: 'Dependency Review'
+name: Dependency Review
+
 on:
   workflow_dispatch:
     inputs:
-      sha:
-        description: 'The commit ref or SHA'
-        required: true
+      branch:
+        description: 'Branch to check'
+        required: false
         default: 'main'
-
-permissions:
-  contents: read
+      warn-only:
+        description: 'Warn only (do not fail job)'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: '0 3 * * *' # Runs at 03:00 UTC every day
 
 jobs:
-  dependency-review:
+  npm-audit:
     runs-on: ubuntu-latest
+    env:
+      BRANCH: ${{ github.event.inputs.branch || 'main' }}
+      WARN_ONLY: ${{ github.event.inputs['warn-only'] || 'false' }}
     steps:
-      - name: 'Checkout Repository'
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{steps.prep.outputs.sha}}
-      - name: 'Dependency Review'
-        uses: actions/dependency-review-action@v4
+          ref: ${{ env.BRANCH }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          warn-only: true
-          head-ref: ${{ github.event.inputs.sha }}
-          base-ref: ${{ github.event.inputs.sha }}
-      - run: npm audit
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit and save results
+        run: |
+          npm audit --json > audit.json
+
+      - name: Parse audit results and create summary
+        id: audit-summary
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const audit = JSON.parse(fs.readFileSync('audit.json', 'utf8'));
+          let vulnerabilities = [];
+          let total = 0;
+          let severityCount = { low: 0, moderate: 0, high: 0, critical: 0 };
+          if (audit.metadata && audit.metadata.vulnerabilities) {
+            for (const [sev, count] of Object.entries(audit.metadata.vulnerabilities)) {
+              severityCount[sev] = count;
+              total += count;
+            }
+          }
+          if (audit.vulnerabilities) {
+            for (const [name, vuln] of Object.entries(audit.vulnerabilities)) {
+              for (const v of vuln.via) {
+                if (typeof v === 'object') {
+                  vulnerabilities.push({
+                    name,
+                    version: vuln.version,
+                    url: v.url || '',
+                    severity: v.severity || 'unknown',
+                  });
+                }
+              }
+            }
+          }
+          let summary = `## Vulnerability Summary\n`;
+          summary += `**Total vulnerabilities:** ${total}\n`;
+          summary += `- Low: ${severityCount.low}\n`;
+          summary += `- Moderate: ${severityCount.moderate}\n`;
+          summary += `- High: ${severityCount.high}\n`;
+          summary += `- Critical: ${severityCount.critical}\n`;
+          summary += `\n## Vulnerability Details\n`;
+          if (vulnerabilities.length > 0) {
+            summary += `| Dependency | Version | Link | Severity |\n|---|---|---|---|\n`;
+            for (const v of vulnerabilities) {
+              summary += `| ${v.name} | ${v.version} | [link](${v.url}) | ${v.severity} |\n`;
+            }
+          } else {
+            summary += 'No vulnerabilities found.';
+          }
+          fs.writeFileSync('audit-summary.md', summary);
+          // Set outputs for next step
+          const fail = (process.env.WARN_ONLY === 'true' || process.env.WARN_ONLY === true) ? 'false' : (total > 0 ? 'true' : 'false');
+          console.log(`::set-output name=fail::${fail}`);
+          EOF
+
+      - name: Show summary
+        run: cat audit-summary.md
+
+      - name: Fail if vulnerabilities found and warn-only is false
+        if: steps.audit-summary.outputs.fail == 'true'
+        run: |
+          echo "Vulnerabilities detected! Failing the job."
+          exit 1

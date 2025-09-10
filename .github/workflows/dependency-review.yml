@@ -24,3 +24,4 @@ jobs:
           warn-only: true
           head-ref: ${{ github.event.inputs.sha }}
           base-ref: ${{ github.event.inputs.sha }}
+      - run: npm audit

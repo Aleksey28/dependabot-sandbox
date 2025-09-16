@@ -1,16 +1,13 @@
 name: Create Dependency Snapshot
 
 on:
-  push:
-    branches:
-      - main
-      - 'release/*'
   workflow_dispatch:
     inputs:
       branch:
         description: 'Branch to run this workflow on'
         required: false
         default: development
+
 
 jobs:
   submit-dependencies:
@@ -33,49 +30,49 @@ jobs:
       - name: Generate and submit dependency snapshot
         run: |
           node -e "
-            const { PackageCache, Snapshot } = require('@github/dependency-submission-toolkit');
-            const { readFileSync } = require('fs');
-            const { join } = require('path');
+            (async () => {
+              const { PackageCache, Snapshot } = require('@github/dependency-submission-toolkit');
+              const { readFileSync } = require('fs');
+              const { join } = require('path');
 
-            const packageJsonPath = join(process.cwd(), 'package.json');
-            const lockFilePath = join(process.cwd(), 'package-lock.json');
+              const packageJsonPath = join(process.cwd(), 'package.json');
+              const lockFilePath = join(process.cwd(), 'package-lock.json');
 
-            const packageJson = JSON.parse(readFileSync(packageJsonPath));
+              const packageJson = JSON.parse(readFileSync(packageJsonPath));
 
-            // Parse package-lock.json for exact versions
-            let lockData = {};
-            try {
-              lockData = JSON.parse(readFileSync(lockFilePath));
-            } catch (err) {
-              console.warn('No package-lock.json found, proceeding with package.json only');
-            }
+              let dependencies = {};
+              try {
+                const lockData = JSON.parse(readFileSync(lockFilePath));
+                if (lockData.dependencies) {
+                  Object.keys(lockData.dependencies).forEach(dep => {
+                    dependencies[dep] = lockData.dependencies[dep].version;
+                  });
+                }
+              } catch (err) {
+                console.warn('No valid package-lock.json found, using package.json dependencies');
+                if (packageJson.dependencies) {
+                  dependencies = { ...packageJson.dependencies };
+                }
+              }
 
-            const packageCache = new PackageCache();
-
-            const dependencies = {};
-            if (lockData.dependencies) {
-              Object.keys(lockData.dependencies).forEach(dep => {
-                dependencies[dep] = lockData.dependencies[dep].version;
+              const packageCache = new PackageCache();
+              packageCache.addPackage({
+                name: packageJson.name,
+                version: packageJson.version,
+                dependencies
               });
-            } else if (packageJson.dependencies) {
-              Object.assign(dependencies, packageJson.dependencies);
-            }
 
-            packageCache.addPackage({
-              name: packageJson.name,
-              version: packageJson.version,
-              dependencies
-            });
+              const snapshot = new Snapshot({
+                correlator: '${{ github.workflow }}-${{ github.job }}',
+                commitSha: '${{ github.sha }}',
+                detector: { name: 'custom-detector' },
+                manifests: [],
+                buildTargets: [],
+              });
 
-            const snapshot = new Snapshot({
-              correlator: '${{ github.workflow }}-${{ github.job }}',
-              commitSha: '${{ github.sha }}',
-              detector: { name: 'custom-detector' },
-              manifests: [],
-              buildTargets: [],
-            });
-
-            snapshot.submit();
+              await snapshot.submit();
+              console.log('Dependency snapshot submitted successfully!');
+            })();
           "
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

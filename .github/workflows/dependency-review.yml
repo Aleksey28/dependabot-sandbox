@@ -29,6 +29,7 @@ jobs:
           BRANCH_NAME: ${{ github.event.inputs.branch || github.ref_name }}
           COMMIT_SHA: ${{ github.event.inputs.sha || github.sha }}
         run: |
+            import { Octokit } from "@octokit/rest";
             // Octokit.js
             // https://github.com/octokit/core.js#readme
             const octokit = new Octokit({

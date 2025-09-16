@@ -1,27 +1,81 @@
-name: Component Detection
+name: Create Dependency Snapshot
 
 on:
+  push:
+    branches:
+      - main
+      - 'release/*'
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Select the branch to run component detection on'
-        required: true
-        default: "development"
-
-permissions:
-  contents: write          # required for actions/checkout
-  id-token: write          # required for dependency submission
-  security-events: write   # required for dependency submission
+        description: 'Branch to run this workflow on'
+        required: false
+        default: development
 
 jobs:
-  detect-components:
+  submit-dependencies:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout selected branch
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
         with:
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
 
-      - uses: sbt/setup-sbt@v1
-      - uses: scalacenter/sbt-dependency-submission@v2
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate and submit dependency snapshot
+        run: |
+          node -e "
+            const { PackageCache, Snapshot } = require('@github/dependency-submission-toolkit');
+            const { readFileSync } = require('fs');
+            const { join } = require('path');
+
+            const packageJsonPath = join(process.cwd(), 'package.json');
+            const lockFilePath = join(process.cwd(), 'package-lock.json');
+
+            const packageJson = JSON.parse(readFileSync(packageJsonPath));
+
+            // Parse package-lock.json for exact versions
+            let lockData = {};
+            try {
+              lockData = JSON.parse(readFileSync(lockFilePath));
+            } catch (err) {
+              console.warn('No package-lock.json found, proceeding with package.json only');
+            }
+
+            const packageCache = new PackageCache();
+
+            const dependencies = {};
+            if (lockData.dependencies) {
+              Object.keys(lockData.dependencies).forEach(dep => {
+                dependencies[dep] = lockData.dependencies[dep].version;
+              });
+            } else if (packageJson.dependencies) {
+              Object.assign(dependencies, packageJson.dependencies);
+            }
+
+            packageCache.addPackage({
+              name: packageJson.name,
+              version: packageJson.version,
+              dependencies
+            });
+
+            const snapshot = new Snapshot({
+              correlator: '${{ github.workflow }}-${{ github.job }}',
+              commitSha: '${{ github.sha }}',
+              detector: { name: 'custom-detector' },
+              manifests: [],
+              buildTargets: [],
+            });
+
+            snapshot.submit();
+          "
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,78 +1,80 @@
-name: Create Dependency Snapshot
+name: Submit Dependency Snapshot
 
 on:
+  push:
+    branches:
+      - main
+      - 'release/*'
   workflow_dispatch:
     inputs:
       branch:
         description: 'Branch to run this workflow on'
         required: false
-        default: development
-
+        default: main
 
 jobs:
   submit-dependencies:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v3
         with:
           ref: ${{ github.event.inputs.branch || github.ref_name }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '16'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Generate and submit dependency snapshot
+      - name: Read package-lock.json and construct snapshot
+        id: snapshot
         run: |
           node -e "
-            (async () => {
-              const { PackageCache, Snapshot } = require('@github/dependency-submission-toolkit');
-              const { readFileSync } = require('fs');
-              const { join } = require('path');
+            const { readFileSync } = require('fs');
+            const { join } = require('path');
 
-              const packageJsonPath = join(process.cwd(), 'package.json');
-              const lockFilePath = join(process.cwd(), 'package-lock.json');
+            const lockPath = join(process.cwd(), 'package-lock.json');
+            const lockData = JSON.parse(readFileSync(lockPath));
 
-              const packageJson = JSON.parse(readFileSync(packageJsonPath));
+            const manifests = {};
+            manifests['package-lock.json'] = {
+              name: 'package-lock.json',
+              file: { source_location: 'package-lock.json' },
+              resolved: {}
+            };
 
-              let dependencies = {};
-              try {
-                const lockData = JSON.parse(readFileSync(lockFilePath));
-                if (lockData.dependencies) {
-                  Object.keys(lockData.dependencies).forEach(dep => {
-                    dependencies[dep] = lockData.dependencies[dep].version;
-                  });
-                }
-              } catch (err) {
-                console.warn('No valid package-lock.json found, using package.json dependencies');
-                if (packageJson.dependencies) {
-                  dependencies = { ...packageJson.dependencies };
-                }
-              }
-
-              const packageCache = new PackageCache();
-              packageCache.addPackage({
-                name: packageJson.name,
-                version: packageJson.version,
-                dependencies
+            if (lockData.dependencies) {
+              Object.entries(lockData.dependencies).forEach(([pkg, info]) => {
+                manifests['package-lock.json'].resolved[pkg] = {
+                  package_url: `pkg:/npm/${encodeURIComponent(pkg)}@${info.version}`,
+                  dependencies: info.requires ? Object.keys(info.requires) : []
+                };
               });
+            }
 
-              const snapshot = new Snapshot({
-                correlator: '${{ github.workflow }}-${{ github.job }}',
-                commitSha: '${{ github.sha }}',
-                detector: { name: 'custom-detector' },
-                manifests: [],
-                buildTargets: [],
-              });
+            // Save JSON for curl
+            const snapshot = {
+              version: 0,
+              sha: process.env.GITHUB_SHA,
+              ref: `refs/heads/${process.env.GITHUB_REF_NAME}`,
+              job: {
+                correlator: `${process.env.GITHUB_WORKFLOW}_${process.env.GITHUB_JOB}`,
+                id: process.env.GITHUB_RUN_ID
+              },
+              detector: {
+                name: 'octo-detector',
+                version: '0.0.1',
+                url: 'https://github.com/octo-org/octo-repo'
+              },
+              scanned: new Date().toISOString(),
+              manifests
+            };
 
-              await snapshot.submit();
-              console.log('Dependency snapshot submitted successfully!');
-            })();
+            require('fs').writeFileSync('snapshot.json', JSON.stringify(snapshot, null, 2));
           "
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Submit snapshot to GitHub Dependency Graph
+        run: |
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/dependency-graph/snapshots \
+            -d @snapshot.json

@@ -32,4 +32,4 @@ jobs:
         run: npm ci
 
       - name: Submit dependency snapshot
-        uses: github/advanced-security/component-detection-dependency-submission-action@v2
+        uses: advanced-security/component-detection-dependency-submission-action@v2

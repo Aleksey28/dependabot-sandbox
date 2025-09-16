@@ -15,7 +15,6 @@ jobs:
     permissions:       # 👈 Explicit permissions required
       contents: read
       security-events: write
-      id-token: write
 
     steps:
       - name: Checkout selected branch

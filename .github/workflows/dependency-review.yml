@@ -6,11 +6,16 @@ on:
       branch:
         description: 'Select the branch to run component detection on'
         required: true
-        default: 'development'
+        default: 'main'
 
 jobs:
   detect-components:
     runs-on: ubuntu-latest
+
+    permissions:       # 👈 Explicit permissions required
+      contents: read
+      security-events: write
+      id-token: write
 
     steps:
       - name: Checkout selected branch
@@ -21,4 +26,4 @@ jobs:
       - name: Run Component Detection Submission
         uses: advanced-security/component-detection-dependency-submission-action@v0.1.0
         with:
-          token: ${{ secrets.ACTION_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}

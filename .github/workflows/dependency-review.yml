@@ -21,4 +21,4 @@ jobs:
       - name: Run Component Detection Submission
         uses: advanced-security/component-detection-dependency-submission-action@v0.1.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ACTION_TOKEN }}

@@ -1,40 +1,29 @@
-name: NPM Security Audit
+name: NPM Dependency Submission
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch to check"
+        description: "Branch to submit dependencies for"
         required: false
         default: "main"
-      warn-only:
-        description: "Do not fail the job on vulnerabilities"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "true"
-          - "false"
-  schedule:
-    - cron: "0 2 * * *" # daily at 02:00 UTC
-  pull_request:
-    branches: ["**"]
 
 permissions:
-  contents: read
-  pull-requests: write
+  contents: write          # required for actions/checkout
+  id-token: write          # required for dependency submission
+  security-events: write   # required for dependency submission
 
 jobs:
-  npm-audit:
+  submit-dependencies:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout branch
         uses: actions/checkout@v4
         with:
-          # For workflow_dispatch you can pass `branch`, otherwise default ref is used (PRs/schedule)
-          ref: ${{ github.event.inputs.branch || github.ref }}
+          ref: ${{ github.event.inputs.branch }}
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "18"
@@ -42,148 +31,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run npm audit (capture stdout/stderr)
-        # write stdout to audit.json and stderr to audit.err so we can inspect parse errors
-        run: npm audit --json > audit.json 2> audit.err || true
-
-      - name: Parse vulnerabilities and create summary
-        id: parse
-        run: |
-          node <<'EOF'
-          const fs = require('fs');
-
-          function safeRead(path) {
-            try { return fs.readFileSync(path, 'utf8'); }
-            catch (e) { return null; }
-          }
-
-          function esc(s) {
-            if (s === null || s === undefined) return '';
-            return String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
-          }
-
-          const out = [];
-          const auditPath = 'audit.json';
-          const stderrPath = 'audit.err';
-
-          const raw = (safeRead(auditPath) || '').trim();
-          let parseError = null;
-          let audit = null;
-
-          if (!raw) {
-            // no JSON produced
-            const stderr = safeRead(stderrPath) || '';
-            parseError = `No JSON output from 'npm audit'. stderr: ${stderr.split('\n').slice(0,10).join(' | ')}`;
-          } else {
-            try {
-              audit = JSON.parse(raw);
-            } catch (e) {
-              parseError = `Failed to parse audit.json: ${e.message}`;
-            }
-          }
-
-          const vulnerabilities = [];
-          const counts = { critical: 0, high: 0, moderate: 0, low: 0 };
-
-          if (!parseError && audit) {
-            // Handle npm audit formats: audit.vulnerabilities or audit.advisories
-            if (audit.vulnerabilities && typeof audit.vulnerabilities === 'object') {
-              for (const [pkg, info] of Object.entries(audit.vulnerabilities)) {
-                const version = info.range || info.installedVersion || info.version || 'unknown';
-                const via = Array.isArray(info.via) ? info.via : [];
-                via.forEach(viaItem => {
-                  if (!viaItem) return;
-                  if (typeof viaItem === 'string') return; // sometimes string references
-                  const severity = (viaItem.severity || info.severity || 'moderate').toLowerCase();
-                  counts[severity] = (counts[severity] || 0) + 1;
-                  const url = viaItem.url || (viaItem.source ? `https://www.npmjs.com/advisories/${viaItem.source}` : 'N/A');
-                  vulnerabilities.push({ name: pkg, version, severity, url });
-                });
-              }
-            } else if (audit.advisories && typeof audit.advisories === 'object') {
-              for (const [id, adv] of Object.entries(audit.advisories)) {
-                const name = adv.module_name || adv.package_name || 'unknown';
-                const version = (adv.findings && adv.findings[0] && adv.findings[0].version) || adv.version || 'unknown';
-                const severity = (adv.severity || 'moderate').toLowerCase();
-                counts[severity] = (counts[severity] || 0) + 1;
-                const url = adv.url || `https://www.npmjs.com/advisories/${id}`;
-                vulnerabilities.push({ name, version, severity, url });
-              }
-            } else if (audit.metadata && audit.metadata.vulnerabilities) {
-              // fallback: metadata contains counts only
-              // no detailed list available
-            }
-          }
-
-          // Build markdown summary
-          let header = '## NPM Audit Results\n\n';
-          let totalsSection = '';
-          if (parseError) {
-            totalsSection += `**Audit parsing error**: ${esc(parseError)}\n\n`;
-          } else {
-            const total = vulnerabilities.length;
-            totalsSection += `**Total vulnerabilities:** ${total}\n\n`;
-            totalsSection += `- Critical: ${counts.critical}\n- High: ${counts.high}\n- Moderate: ${counts.moderate}\n- Low: ${counts.low}\n\n`;
-          }
-
-          let table = '## Detailed Vulnerabilities\n\n';
-          table += '| Dependency | Version | Vulnerability | Severity |\n';
-          table += '|---|---|---:|---:|\n';
-          if (!parseError && vulnerabilities.length > 0) {
-            table += vulnerabilities.map(v => {
-              const link = v.url && v.url !== 'N/A' ? `[link](${v.url})` : 'N/A';
-              return `| ${esc(v.name)} | ${esc(v.version)} | ${link} | ${esc(v.severity)} |`;
-            }).join('\n') + '\n';
-          } else {
-            table += '| — | — | — | — |\n';
-          }
-
-          const full = header + totalsSection + table;
-
-          // Write the GitHub Actions job summary (if available)
-          if (process.env.GITHUB_STEP_SUMMARY) {
-            try {
-              fs.writeFileSync(process.env.GITHUB_STEP_SUMMARY, full);
-            } catch (e) {
-              // ignore
-            }
-          }
-
-          // Write comment file for PR comment action
-          try { fs.writeFileSync('comment.md', full); } catch (e) {}
-
-          // Export outputs via GITHUB_OUTPUT
-          const outPath = process.env.GITHUB_OUTPUT;
-          if (outPath) {
-            const hasIssues = (!parseError && vulnerabilities.length > 0) ? 'true' : 'false';
-            fs.appendFileSync(outPath, `hasIssues=${hasIssues}\n`);
-            fs.appendFileSync(outPath, `parseError=${parseError ? 'true' : 'false'}\n`);
-            // also provide a small counts json for convenience
-            fs.appendFileSync(outPath, `counts=${JSON.stringify(counts)}\n`);
-          } else {
-            // fallback: print to console (may still be picked up by old set-output)
-            console.log(`::set-output name=hasIssues::${(!parseError && vulnerabilities.length > 0)}`);
-            console.log(`::set-output name=parseError::${parseError ? 'true' : 'false'}`);
-          }
-
-          // For easier debugging, print a short log
-          console.log('Vulnerabilities found:', vulnerabilities.length);
-          if (parseError) {
-            console.error('Parse error:', parseError);
-            process.exitCode = 0; // do not crash task here; we signal via outputs and let later step fail if desired
-          }
-          EOF
-
-      - name: Comment on PR with vulnerabilities
-        if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          path: comment.md
-
-      - name: Fail if vulnerabilities found (and not warn-only)
-        if: (steps.parse.outputs.hasIssues == 'true' || steps.parse.outputs.parseError == 'true') && (github.event.inputs['warn-only'] != 'true')
-        run: |
-          echo "Errors found during audit or parsing. Failing the job because warn-only != true."
-          echo "hasIssues=${{ steps.parse.outputs.hasIssues }}"
-          echo "parseError=${{ steps.parse.outputs.parseError }}"
-          exit 1
+      - name: Submit dependency snapshot
+        uses: advanced-security/component-detection-dependency-submission-action@v0.1.0

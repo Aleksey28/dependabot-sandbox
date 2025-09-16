@@ -12,6 +12,11 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: write          # required for actions/checkout
+  id-token: write          # required for dependency submission
+  security-events: write   # required for dependency submission
+
 jobs:
   submit-dependencies:
     runs-on: ubuntu-latest

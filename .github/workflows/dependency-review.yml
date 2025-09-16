@@ -29,13 +29,16 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-
-      - name: Submit dependency snapshot via Octokit
+    
+      - name: Request Deployment
+        uses: actions/github-script@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH_NAME: ${{ github.event.inputs.branch || github.ref_name }}
           COMMIT_SHA: ${{ github.event.inputs.sha || github.sha }}
-        run: |
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
             await github.rest.dependencyGraph.createRepositorySnapshot({
               owner: process.env.GITHUB_REPOSITORY.split('/')[0],
               repo: process.env.GITHUB_REPOSITORY.split('/')[1],
